@@ -11,6 +11,7 @@ from agents.weather_agent import WeatherAgent
 from agents.places_agent import PlacesAgent
 from agents.hotels_agent import HotelsAgent
 from agents.budget_agent import BudgetAgent
+from agents.corridor_agent import CorridorAgent
 
 
 def build_router() -> Router:
@@ -20,4 +21,5 @@ def build_router() -> Router:
         PlacesAgent(),
         HotelsAgent(),
         BudgetAgent(),
+        CorridorAgent(),
     ])
