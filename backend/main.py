@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
@@ -63,7 +64,7 @@ templates = Jinja2Templates(directory="templates")
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, session_id: str = Cookie(default=None)):
     sid = session_id or str(uuid.uuid4())
-    response = templates.TemplateResponse("chat.html", {"request": request})
+    response = templates.TemplateResponse(request=request, name="chat.html")
     response.set_cookie("session_id", sid, max_age=SESSION_TTL, httponly=True)
     return response
 

@@ -18,8 +18,10 @@ Key notes:
 import httpx
 from config import MAPPLS_KEY
 
-_BASE    = "https://route.mappls.com/route/direction/route_adv/driving"
-_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+_BASE     = "https://route.mappls.com/route/direction/route_adv/driving"
+_GEO_BASE = "https://atlas.mappls.com/api/places"
+_TIMEOUT  = httpx.Timeout(15.0, connect=5.0)
+_GEO_TIMEOUT = httpx.Timeout(5.0, connect=3.0)
 
 
 async def get_directions(
@@ -132,6 +134,67 @@ async def get_directions(
         return None
     except Exception as e:
         print(f"[mappls] Failed: {e}")
+        return None
+
+
+async def reverse_geocode(lat: float, lon: float) -> str | None:
+    """
+    (lat, lon) → city/town name using Mappls reverse geocoding.
+
+    Returns the most specific populated place name (city > locality > district),
+    or None if the API fails or the point is in an unnamed area.
+    """
+    if not MAPPLS_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=_GEO_TIMEOUT) as client:
+            resp = await client.get(
+                f"{_GEO_BASE}/reverse-geocode",
+                params={"lat": lat, "lng": lon, "access_token": MAPPLS_KEY},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        cop = data.get("copResults", {})
+        if isinstance(cop, list):
+            cop = cop[0] if cop else {}
+
+        name = (
+            cop.get("city")
+            or cop.get("locality")
+            or cop.get("subLocality")
+            or cop.get("district")
+            or ""
+        )
+        return name.strip() or None
+    except Exception:
+        return None
+
+
+async def forward_geocode(place: str) -> tuple[float, float] | None:
+    """
+    Place name → (lat, lon) using Mappls geocoding API.
+    Returns None if the place can't be located.
+    """
+    if not MAPPLS_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=_GEO_TIMEOUT) as client:
+            resp = await client.get(
+                f"{_GEO_BASE}/geocode",
+                params={"address": place, "itemCount": "1", "access_token": MAPPLS_KEY},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        results = data.get("copResults", [])
+        if not results:
+            return None
+        item = results[0] if isinstance(results, list) else results
+        lat = float(item.get("latitude") or item.get("lat") or 0)
+        lon = float(item.get("longitude") or item.get("lng") or 0)
+        return (lat, lon) if lat and lon else None
+    except Exception:
         return None
 
 

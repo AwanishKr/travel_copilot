@@ -1,12 +1,10 @@
 """
 tools/geocoder.py
 -----------------
-Place name → (lat, lon) with two fallback layers:
+Place name → (lat, lon).
 
-  1. Static dict  — instant, covers ~80 Indian cities
-  2. Partial match — fuzzy match against static dict
-
-No API key needed.
+Primary: Mappls geocoding API (dynamic, covers any Indian place).
+Fallback: Static cache of common cities for offline/fast lookup.
 """
 
 import re
@@ -79,6 +77,7 @@ CITY_COORDS: dict[str, tuple[float, float]] = {
     "karnal": (29.6857, 76.9905),
     "kurukshetra": (29.9695, 76.8783),
     "ropar": (30.9639, 76.5192),
+    "kiratpur sahib": (31.1787, 76.5633),
     "bilaspur": (31.3378, 76.7615),
     "mandi": (31.7081, 76.9318),
     "kullu": (31.9578, 77.1095),
@@ -120,25 +119,26 @@ async def geocode(place: str) -> tuple[float, float] | None:
     Convert a place name to (lat, lon).
 
     Priority:
-      1. Static dict exact match
-      2. Partial string match in static dict
+      1. Static cache — instant for known cities
+      2. Mappls geocoding API — covers any Indian place
     """
     key = place.lower().strip()
 
     if key in CITY_COORDS:
         return CITY_COORDS[key]
-
     for city, coords in CITY_COORDS.items():
         if key in city or city in key:
             return coords
 
-    return None
+    from tools.mappls import forward_geocode
+    return await forward_geocode(place)
 
 
 def geocode_sync(place: str) -> tuple[float, float] | None:
     """
-    Synchronous version using static dict only.
-    Use when you can't await — e.g. in keyword parsing.
+    Synchronous offline lookup — static cache only.
+    Use only where async is not possible (e.g. regex fallback parsing).
+    Returns None for places not in the cache.
     """
     key = place.lower().strip()
     if key in CITY_COORDS:

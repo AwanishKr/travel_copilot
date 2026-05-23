@@ -92,8 +92,6 @@ class BudgetAgent(BaseAgent):
             f"  Return trip         ₹{fuel_cost + toll_amount:,} extra (fuel + toll)",
         ]
 
-        if ctx.get("seasonal_warnings"):
-            lines.append("\n⚠️ Budget tip: mountain routes may have extra charges (snow chains, permits).")
 
         return self.make_response("\n".join(lines))
 

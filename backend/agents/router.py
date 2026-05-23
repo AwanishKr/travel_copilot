@@ -18,7 +18,15 @@ class Router:
         self._list   = agents
 
     async def route(self, query: str, session: dict) -> dict:
-        # Layer 1: keyword match
+        # Layer 0: session state — pending route selection always goes to route agent
+        if session.get("pending_routes"):
+            return await self._agents["route"].handle(query, session)
+
+        # Layer 1a: "[City] to [City]" pattern — always a route query
+        if re.search(r"\b\w+\s+to\s+\w+\b", query.lower()):
+            return await self._agents["route"].handle(query, session)
+
+        # Layer 1b: keyword match
         agent = self._keyword_match(query)
 
         # Layer 2: LLM classification

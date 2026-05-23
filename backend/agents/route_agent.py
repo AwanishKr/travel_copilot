@@ -46,6 +46,10 @@ class RouteAgent(BaseAgent):
 
     async def handle(self, query: str, session: dict) -> dict:
 
+        # If user is responding to a route selection prompt, handle that first
+        if session.get("pending_routes"):
+            return await self._handle_route_selection(query, session)
+
         # Step 1 — Extract origin / destination from natural language
         parsed      = await self._extract_route(query, session)
         origin      = parsed.get("origin")
@@ -69,27 +73,63 @@ class RouteAgent(BaseAgent):
         dest_coords   = coords[-1]
         via_coords    = coords[1:-1]
 
-        # Step 3 — Tool: get_directions
+        # Step 3 — Tool: get_directions (fetch all alternatives)
         raw = await self._tool_get_directions(origin_coords, dest_coords, via_coords)
 
-        # Step 4 — Tool: build_travel_context
+        # Step 4 — If multiple routes, ask the user to pick one
+        routes = raw.get("routes", []) if raw else []
+        if len(routes) > 1:
+            session["pending_routes"]       = raw
+            session["pending_origin"]       = origin
+            session["pending_destination"]  = destination
+            session["pending_via"]          = via
+            session["pending_origin_coords"] = origin_coords
+            session["pending_dest_coords"]  = dest_coords
+            return self.make_clarify(self._format_route_options(routes, origin, destination))
+
+        return await self._build_and_respond(raw, origin, destination, via, origin_coords, dest_coords, session)
+
+    async def _handle_route_selection(self, query: str, session: dict) -> dict:
+        raw           = session["pending_routes"]
+        origin        = session["pending_origin"]
+        destination   = session["pending_destination"]
+        via           = session["pending_via"]
+        origin_coords = session["pending_origin_coords"]
+        dest_coords   = session["pending_dest_coords"]
+        routes        = raw.get("routes", [])
+
+        choice = self._parse_route_selection(query, len(routes))
+        if choice is None:
+            return self.make_clarify(
+                f"Please reply with a number — 1 to {len(routes)} — to pick a route."
+            )
+
+        # Clear pending state and continue with selected route
+        for key in ("pending_routes", "pending_origin", "pending_destination",
+                    "pending_via", "pending_origin_coords", "pending_dest_coords"):
+            session.pop(key, None)
+
+        selected_raw = {"routes": [routes[choice]]}
+        return await self._build_and_respond(selected_raw, origin, destination, via, origin_coords, dest_coords, session)
+
+    async def _build_and_respond(self, raw, origin, destination, via, origin_coords, dest_coords, session) -> dict:
+        # Build travel context
         travel_context = self._tool_build_travel_context(
             raw, origin, destination, via, origin_coords, dest_coords
         )
 
-        # Step 5 — Store in session so corridor + weather agents can read it
+        # Store in session so corridor + weather agents can read it
         session["trip_context"] = travel_context
         session["last_cities"]  = [origin] + via + [destination]
 
-        # Step 6 — Enrich in parallel: corridor stops + weather
+        # Enrich in parallel: corridor stops + weather
         await asyncio.gather(
             _corridor_agent.handle("stops along route", session),
             _weather_agent.handle("weather along route", session),
         )
 
-        # Step 7 — Generate combined narrative from enriched context
+        # Generate combined narrative from enriched context
         summary = await self._generate_summary(session["trip_context"])
-
         return self.make_response(summary, data={"trip_context": session["trip_context"]})
 
     # ── Tool 1: get_directions ────────────────────────────────────────────────
@@ -108,7 +148,7 @@ class RouteAgent(BaseAgent):
             origin_coords,
             dest_coords,
             via=via_coords if via_coords else None,
-            alternatives=False,
+            alternatives=True,
             steps=True,
         )
 
@@ -151,6 +191,50 @@ class RouteAgent(BaseAgent):
 
         return filter_route(raw, origin, destination, via=via)
 
+    # ── Route selection helpers ───────────────────────────────────────────────
+
+    def _format_route_options(self, routes: list[dict], origin: str, destination: str) -> str:
+        lines = [
+            f"I found {len(routes)} routes from {origin.title()} to {destination.title()}. "
+            "Which one would you like to take?\n"
+        ]
+        for i, r in enumerate(routes, 1):
+            km   = round(r["distance_m"] / 1000)
+            hrs  = int(r["duration_s"] // 3600)
+            mins = int((r["duration_s"] % 3600) // 60)
+
+            seen  = set()
+            major = []
+            for s in r.get("steps", []):
+                name = s.get("name", "").strip()
+                if name and s.get("distance_m", 0) > 5000 and name not in seen:
+                    seen.add(name)
+                    major.append(name)
+
+            road_preview = " → ".join(major[:3])
+            if len(major) > 3:
+                road_preview += f" → ..."
+
+            lines.append(f"**Route {i}** — {km} km, {hrs}h {mins}m")
+            lines.append(f"  Via: {road_preview}\n")
+
+        lines.append("Reply with **1**, **2**, or **3** to select a route.")
+        return "\n".join(lines)
+
+    def _parse_route_selection(self, query: str, num_routes: int) -> int | None:
+        q = query.lower().strip()
+
+        for i in range(1, num_routes + 1):
+            if re.search(rf"\b{i}\b", q):
+                return i - 1
+
+        ordinals = {"first": 0, "one": 0, "second": 1, "two": 1, "third": 2, "three": 2}
+        for word, idx in ordinals.items():
+            if word in q and idx < num_routes:
+                return idx
+
+        return None
+
     # ── Natural language summary ──────────────────────────────────────────────
 
     async def _generate_summary(self, ctx: dict) -> str:
@@ -160,86 +244,77 @@ class RouteAgent(BaseAgent):
         total_km    = summary.get("total_km") or ctx.get("total_km", 0)
         duration_hr = summary.get("duration_hr") or round((ctx.get("total_eta_min", 0)) / 60, 1)
         has_toll    = summary.get("has_toll", False)
-
         corridors      = ctx.get("major_corridors", [])
         cities         = ctx.get("major_cities", [])
         corridor_stops = ctx.get("corridor_stops", [])
 
-        corridor_names = ", ".join(c["name"] for c in corridors) if corridors else "highway"
-        cities_desc    = ", ".join(c["name"].title() for c in cities) if cities else ""
+        # ── Section 1: Trip header (fully deterministic) ──────────────────────
+        toll_tag = "  |  Tolls: Yes" if has_toll else ""
+        lines = [
+            f"**{origin} → {destination}**  |  {total_km} km  |  ~{duration_hr} hrs{toll_tag}",
+            "",
+        ]
 
-        stops_desc = ""
-        for cs in corridor_stops:
-            if cs["stops"]:
-                stops_desc += f"\n{cs['corridor']}:\n"
-                for s in cs["stops"]:
-                    stops_desc += f"  - {s['name']} ({s['type']}): {s['note']}\n"
-
-        weather_lines = []
-        for cp in ctx.get("checkpoints", []):
-            w = cp.get("weather")
-            if w:
-                weather_lines.append(f"  {cp['name'].title()}: {w.get('condition','')}, {w.get('temp_c','')}°C")
-        weather_desc = "\n".join(weather_lines)
-
-        prompt = f"""You are an experienced Indian long-distance road trip co-driver giving a pre-trip briefing.
-
-Route: {origin} to {destination}
-Distance: {total_km} km  |  Estimated drive time: {duration_hr} hrs
-Main highways: {corridor_names}
-{"Cities along the way: " + cities_desc if cities_desc else ""}
-{"Note: this route has toll roads." if has_toll else ""}
-
-{"Recommended stops along the way:" + stops_desc if stops_desc else ""}
-
-{"Weather at key cities:" + chr(10) + weather_desc if weather_desc else ""}
-
-Write a natural pre-trip briefing in 3-5 short paragraphs. Tone: calm, knowledgeable, practical — like a friend who has driven this route many times.
-- Mention the highways and what the drive is like
-- Name the major cities the driver passes through
-- Call out 2-3 notable stops if available
-- Mention any weather worth noting
-Do NOT use bullet points or headers. Plain paragraphs only."""
-
-        try:
-            return await self.call_llm(prompt)
-        except Exception:
-            return self._static_summary(ctx)
-
-    def _static_summary(self, ctx: dict) -> str:
-        summary        = ctx.get("trip_summary", {})
-        origin         = summary.get("origin", ctx.get("origin", "")).title()
-        destination    = summary.get("destination", ctx.get("destination", "")).title()
-        total_km       = summary.get("total_km") or ctx.get("total_km", 0)
-        duration_hr    = summary.get("duration_hr", 0)
-        corridors      = ctx.get("major_corridors", [])
-        cities         = ctx.get("major_cities", [])
-        corridor_stops = ctx.get("corridor_stops", [])
-        has_toll       = summary.get("has_toll", False)
-
-        lines = [f"Your trip from {origin} to {destination} — {total_km} km, ~{duration_hr} hrs."]
-
+        # ── Section 2: Highway corridors (fully deterministic) ────────────────
         if corridors:
-            lines.append("Route: " + " → ".join(c["name"] for c in corridors))
+            lines.append("**YOUR ROUTE**")
+            for c in corridors:
+                lines.append(
+                    f"  {c['name']:<45}  km {c['km_start']:>3.0f} – {c['km_end']:>3.0f}"
+                    f"  ({c['length_km']:.0f} km)"
+                )
+            lines.append("")
 
+        # ── Section 3: Cities in order (fully deterministic) ──────────────────
         if cities:
-            names = ", ".join(
+            mid_cities = [
                 c["name"].title() for c in cities
                 if c["name"] not in (origin.lower(), destination.lower())
-            )
-            if names:
-                lines.append(f"Passing through: {names}")
+            ]
+            city_chain = f"{origin} → " + " → ".join(mid_cities) + f" → {destination}" if mid_cities else f"{origin} → {destination}"
+            lines.append("**CITIES ALONG THE WAY**")
+            lines.append(f"  {city_chain}")
+            lines.append("")
 
-        for cs in corridor_stops:
-            if cs["stops"]:
-                lines.append(f"\nStops on {cs['corridor']}:")
+        # ── Section 4: Drive character (LLM — 2 sentences max) ────────────────
+        corridor_names = " → ".join(c["name"] for c in corridors) if corridors else "the highway"
+        drive_blurb = await self._drive_character(origin, destination, corridor_names)
+        if drive_blurb:
+            lines.append("**WHAT TO EXPECT**")
+            lines.append(f"  {drive_blurb}")
+            lines.append("")
+
+        # ── Section 5: Stops (deterministic from corridor agent) ──────────────
+        has_stops = any(cs["stops"] for cs in corridor_stops)
+        if has_stops:
+            lines.append("**NOTABLE STOPS**")
+            for cs in corridor_stops:
                 for s in cs["stops"]:
                     lines.append(f"  • {s['name']} ({s['type']}) — {s['note']}")
+            lines.append("")
 
-        if has_toll:
-            lines.append("Note: this route has toll roads.")
+        # ── Section 6: Weather (deterministic from weather agent) ─────────────
+        weather_entries = [
+            f"  {cp['name'].title()}: {cp['weather'].get('condition','')} {cp['weather'].get('temp_c','')}°C"
+            for cp in ctx.get("checkpoints", [])
+            if cp.get("weather")
+        ]
+        if weather_entries:
+            lines.append("**WEATHER**")
+            lines.extend(weather_entries)
+            lines.append("")
 
         return "\n".join(lines)
+
+    async def _drive_character(self, origin: str, destination: str, corridor_names: str) -> str:
+        """Ask the LLM for exactly 2 sentences describing what this drive feels like.
+        Constrained to corridor names only — cannot hallucinate cities or roads."""
+        prompt = f"""You are a road trip co-driver. Write exactly 2 sentences describing what it feels like to drive from {origin} to {destination} via these roads: {corridor_names}.
+Describe the terrain, pace, and character of the drive. Do NOT mention any city names. Do NOT add facts beyond the road names given."""
+        try:
+            return (await self.call_llm(prompt)).strip()
+        except Exception:
+            return ""
 
     # ── Entity extraction ─────────────────────────────────────────────────────
 

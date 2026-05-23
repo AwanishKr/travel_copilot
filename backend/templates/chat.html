@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Road Trip Co-pilot</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="layout">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span class="logo">🛣️</span>
+        <div>
+          <div class="app-name">Road Trip Co-pilot</div>
+          <div class="app-sub">Indian Highways</div>
+        </div>
+      </div>
+
+      <div class="trip-card" id="trip-card" style="display:none">
+        <div class="trip-card-title">Active Route</div>
+        <div class="trip-route" id="trip-route"></div>
+        <div class="trip-meta" id="trip-meta"></div>
+        <div class="trip-toll" id="trip-toll"></div>
+        <div class="trip-warnings" id="trip-warnings"></div>
+      </div>
+
+      <div class="sidebar-hint">
+        <p>Try asking:</p>
+        <ul>
+          <li onclick="fillInput('Delhi to Manali')">"Delhi to Manali"</li>
+          <li onclick="fillInput('How far is Jaipur from Delhi?')">"How far is Jaipur from Delhi?"</li>
+          <li onclick="fillInput('Plan a trip from Mumbai to Goa')">"Mumbai to Goa"</li>
+          <li onclick="fillInput('Delhi to Shimla via Chandigarh')">"Delhi to Shimla via Chandigarh"</li>
+        </ul>
+      </div>
+
+      <button class="reset-btn" onclick="resetSession()">New Trip</button>
+    </aside>
+
+    <!-- Chat area -->
+    <main class="chat-area">
+      <div class="messages" id="messages">
+        <div class="message agent">
+          <div class="bubble">
+            Hey! I'm your road trip co-pilot for Indian highways. Tell me where you want to go — I'll handle the route, stops, tolls, and everything in between.
+          </div>
+        </div>
+      </div>
+
+      <form class="input-bar" id="chat-form" onsubmit="sendMessage(event)">
+        <input
+          type="text"
+          id="user-input"
+          class="input-field"
+          placeholder="Delhi to Manali..."
+          autocomplete="off"
+          autofocus
+        />
+        <button type="submit" class="send-btn" id="send-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </form>
+    </main>
+
+  </div>
+
+  <script>
+    const messagesEl = document.getElementById('messages');
+    const inputEl    = document.getElementById('user-input');
+    const sendBtn    = document.getElementById('send-btn');
+
+    function scrollToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function addMessage(text, role, type) {
+      const wrap = document.createElement('div');
+      wrap.className = `message ${role}`;
+      if (type === 'error')   wrap.classList.add('error');
+      if (type === 'clarify') wrap.classList.add('clarify');
+
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.innerHTML = formatText(text);
+
+      wrap.appendChild(bubble);
+      messagesEl.appendChild(wrap);
+      scrollToBottom();
+    }
+
+    function addTyping() {
+      const wrap = document.createElement('div');
+      wrap.className = 'message agent typing-wrap';
+      wrap.id = 'typing';
+      wrap.innerHTML = '<div class="bubble typing"><span></span><span></span><span></span></div>';
+      messagesEl.appendChild(wrap);
+      scrollToBottom();
+      return wrap;
+    }
+
+    function removeTyping() {
+      const el = document.getElementById('typing');
+      if (el) el.remove();
+    }
+
+    function formatText(text) {
+      return text
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/\n\n/g, '</p><p>')
+        .replace(/\n/g, '<br>')
+        .replace(/^/, '<p>').replace(/$/, '</p>');
+    }
+
+    function updateSidebar(data) {
+      const ctx = data && data.trip_context;
+      if (!ctx) return;
+
+      const card = document.getElementById('trip-card');
+      card.style.display = 'block';
+
+      const summary = ctx.trip_summary || {};
+      const origin  = (summary.origin || ctx.origin || '').replace(/\b\w/g, c => c.toUpperCase());
+      const dest    = (summary.destination || ctx.destination || '').replace(/\b\w/g, c => c.toUpperCase());
+      const km      = summary.total_km || ctx.total_km || 0;
+      const hrs     = summary.duration_hr || 0;
+
+      document.getElementById('trip-route').textContent = `${origin} → ${dest}`;
+      document.getElementById('trip-meta').textContent  = `${km} km  ·  ~${hrs} hrs`;
+
+      const toll = ctx.toll;
+      const tollEl = document.getElementById('trip-toll');
+      tollEl.textContent = toll ? `Toll ~₹${toll.amount.toLocaleString()} · ${toll.highway}` : '';
+
+      const warnings = ctx.seasonal_warnings || [];
+      const warnEl   = document.getElementById('trip-warnings');
+      warnEl.innerHTML = warnings.map(w => `<div class="warning">⚠️ ${w}</div>`).join('');
+    }
+
+    async function sendMessage(e) {
+      e.preventDefault();
+      const text = inputEl.value.trim();
+      if (!text) return;
+
+      inputEl.value = '';
+      sendBtn.disabled = true;
+      inputEl.disabled = true;
+
+      addMessage(text, 'user');
+      const typing = addTyping();
+
+      try {
+        const res  = await fetch('/chat', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ message: text }),
+        });
+        const data = await res.json();
+
+        removeTyping();
+        addMessage(data.text, 'agent', data.type);
+        updateSidebar(data.data);
+      } catch (err) {
+        removeTyping();
+        addMessage('Something went wrong. Please try again.', 'agent', 'error');
+      } finally {
+        sendBtn.disabled = false;
+        inputEl.disabled = false;
+        inputEl.focus();
+      }
+    }
+
+    async function resetSession() {
+      await fetch('/reset', { method: 'POST' });
+      messagesEl.innerHTML = '';
+      document.getElementById('trip-card').style.display = 'none';
+      addMessage("Trip reset. Where to next?", 'agent');
+      inputEl.focus();
+    }
+
+    function fillInput(text) {
+      inputEl.value = text;
+      inputEl.focus();
+    }
+
+    inputEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        document.getElementById('chat-form').dispatchEvent(new Event('submit'));
+      }
+    });
+  </script>
+</body>
+</html>
