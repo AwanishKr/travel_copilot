@@ -143,44 +143,41 @@ def test_route_agent_parse():
         err(f"Partial origin failed: {result}")
 
 
-def test_route_agent_format():
-    header("route_agent._format_briefing")
+def test_route_agent_static_summary():
+    header("route_agent._static_summary")
     from agents.route_agent import RouteAgent
 
     agent = RouteAgent()
     mock_context = {
-        "origin":        "delhi",
-        "destination":   "manali",
-        "via":           [],
-        "total_km":      572.0,
-        "total_eta_min": 640,
-        "route_source":  "ors",
-        "toll":          {"amount": 890, "highway": "NH-44 / NH-3"},
-        "seasonal_warnings": ["Rohtang Pass closed (Nov–May)"],
-        "checkpoints": [
-            {"name": "delhi",      "km_from_start": 0,   "type": "fuel_food",         "note": "Start of journey."},
-            {"name": "panipat",    "km_from_start": 90,  "type": "fuel_food",         "note": "First major dhaba stop on NH-44."},
-            {"name": "chandigarh", "km_from_start": 250, "type": "major_city",        "note": "Last big city — ATM, hospital, fill fuel."},
-            {"name": "mandi",      "km_from_start": 460, "type": "gateway",           "note": "Gateway to the hills. Road character changes."},
-            {"name": "kullu",      "km_from_start": 510, "type": "mountain_critical", "note": "Last fuel before Manali."},
-            {"name": "manali",     "km_from_start": 572, "type": "destination",       "note": "You've arrived!"},
+        "trip_summary": {
+            "origin": "delhi", "destination": "manali",
+            "total_km": 572.0, "duration_hr": 10.7,
+            "total_eta_min": 640, "has_toll": True,
+        },
+        "major_corridors": [
+            {"name": "NH-44", "km_start": 0, "km_end": 250, "length_km": 250},
         ],
-        "geometry": [],
-        "status": "planned",
+        "semantic_checkpoints": [
+            {"name": "panipat",    "km_from_start": 90,  "type": "rest_zone",   "note": "First major dhaba stop on NH-44."},
+            {"name": "chandigarh", "km_from_start": 250, "type": "city",        "note": "Last big city — fill fuel here."},
+            {"name": "manali",     "km_from_start": 572, "type": "destination", "note": ""},
+        ],
+        "toll": {"amount": 890, "highway": "NH-44 / NH-3"},
+        "seasonal_warnings": ["Rohtang Pass closed (Nov–May)"],
     }
 
-    output = agent._format_briefing(mock_context)
+    output = agent._static_summary(mock_context)
     print()
     print(output)
     print()
 
-    assert "Delhi → Manali"  in output, "route header missing"
-    assert "572"             in output, "distance missing"
-    assert "10h 40m"         in output, "ETA missing"
-    assert "Panipat"         in output, "checkpoint missing"
-    assert "Chandigarh"      in output, "checkpoint missing"
-    assert "Rohtang"         in output, "seasonal warning missing"
-    ok("Briefing format correct")
+    assert "Delhi"     in output, "origin missing"
+    assert "Manali"    in output, "destination missing"
+    assert "572"       in output, "distance missing"
+    assert "890"       in output, "toll missing"
+    assert "Panipat"   in output, "checkpoint missing"
+    assert "Rohtang"   in output, "seasonal warning missing"
+    ok("Static summary correct")
 
 
 # ============================================================================

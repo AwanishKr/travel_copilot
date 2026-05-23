@@ -5,6 +5,13 @@ import sys
 # Make backend/ importable from tests/
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "backend"))
 
+# Load .env from project root so MAPPLS_KEY etc. are available without inline export
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), "backend", ".env"))
+except ImportError:
+    pass
+
 OK  = "\033[92m✅\033[0m"
 ERR = "\033[91m❌\033[0m"
 SKP = "\033[93m⏭ \033[0m"

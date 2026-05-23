@@ -105,9 +105,54 @@ async def run(source: str, destination: str):
         dim(f"    ... and {len(major)-12} more")
 
     # ----------------------------------------------------------------
-    # Step 5: Summary (what a maps app shows)
+    # Step 5: POI Along Route (does the static key work for this API?)
     # ----------------------------------------------------------------
-    header("Step 5 — Summary")
+    header("Step 5 — Mappls POI Along Route (static key check)")
+
+    import os, requests as _req
+
+    api_key  = os.getenv("MAPPLS_KEY", "")
+    geometry = r["geometry"]
+
+    if not api_key:
+        skip("MAPPLS_KEY not set — skipping POI Along Route test")
+    else:
+        poi_url = "https://atlas.mappls.com/api/places/along_route"
+        try:
+            resp = _req.post(
+                poi_url,
+                params={"access_token": api_key},
+                data={
+                    "geometries": "polyline6",
+                    "path":       geometry,
+                    "category":   "FODCOF",   # food & restaurants
+                    "buffer":     "500",
+                    "sort":       "",
+                },
+                timeout=15,
+            )
+            dim(f"  HTTP status : {resp.status_code}")
+            if resp.status_code == 200:
+                data  = resp.json()
+                pois  = data.get("suggestedPOIs", [])
+                ok(f"POI Along Route works with static key — {len(pois)} food stops found")
+                for p in pois[:5]:
+                    dim(f"    {p.get('placeName', '?'):<30}  {p.get('type', '')}")
+                if len(pois) > 5:
+                    dim(f"    ... and {len(pois)-5} more")
+            elif resp.status_code == 401:
+                skip("Static key does NOT cover POI Along Route — OAuth required")
+                dim(f"  Response: {resp.text[:120]}")
+            else:
+                err(f"Unexpected status {resp.status_code}")
+                dim(f"  Response: {resp.text[:120]}")
+        except Exception as e:
+            err(f"POI Along Route call failed: {e}")
+
+    # ----------------------------------------------------------------
+    # Step 6: Summary (what a maps app shows)
+    # ----------------------------------------------------------------
+    header("Step 6 — Summary")
     print(f"""
   {source.title()} → {destination.title()}
   ├─ Distance : {km:.1f} km
